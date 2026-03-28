@@ -10,6 +10,7 @@ import com.google.gson.Gson;
 import com.google.inject.Inject;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -33,6 +34,7 @@ public class CustomAuthPlugin {
     private static Gson GSON = new Gson();
     private final ProxyServer server;
     private final Logger logger;
+    private LocalAuthProxy localProxy;
 
     @Inject
     public CustomAuthPlugin(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
@@ -77,23 +79,44 @@ public class CustomAuthPlugin {
         logger.info("  MultiLogin Service Compat 正在初始化...");
         logger.info("  MC-MultiLogin-service 地址: {}", AUTH_BASE_URL);
         logger.info("========================================");
-        // Step 1: 尝试通过反射将 Velocity 内部的 hasJoined URL 替换
-        boolean urlOverridden = SessionServerUrlOverrider.tryOverride(AUTH_BASE_URL, logger);
+
+        // Step 1: 启动本地认证代理（拦截 hasJoined，追加 detail=true，转换 403 错误为可读踢出消息）
+        String hasJoinedBase = AUTH_BASE_URL;
+        try {
+            localProxy = new LocalAuthProxy(AUTH_BASE_URL, logger);
+            localProxy.start();
+            hasJoinedBase = localProxy.getLocalBaseUrl();
+            logger.info("[✓] 本地认证代理已启动，hasJoined 将经由 {} 转发", hasJoinedBase);
+        } catch (IOException e) {
+            logger.warn("[!] 本地认证代理启动失败，将直接使用上游服务（不支持 detail 错误信息）: {}", e.getMessage());
+        }
+
+        // Step 2: 尝试通过反射将 Velocity 内部的 hasJoined URL 替换为本地代理地址
+        boolean urlOverridden = SessionServerUrlOverrider.tryOverride(hasJoinedBase, logger);
         if (urlOverridden) {
-            logger.info("[✓] hasJoined URL 劫持成功（反射方式）");
+            logger.info("[✓] hasJoined URL 劫持成功（反射方式），目标: {}", hasJoinedBase);
         } else {
             logger.warn("[!] hasJoined URL 反射劫持失败，外置登录玩家将无法进入服务器！");
             logger.warn("    解决方案：在启动 Velocity 时添加以下 JVM 参数：");
             logger.warn("    -Dmojang.sessionserver={}/sessionserver/session/minecraft/hasJoined",
-                    AUTH_BASE_URL);
+                    hasJoinedBase);
             logger.warn("    此参数在 Velocity 读取 InitialLoginSessionHandler 之前生效。");
         }
 
-        // Step 2: 注册事件监听器，确保玩家 GameProfile 来自 MC-MultiLogin-service
+        // Step 3: 注册事件监听器
         server.getEventManager().register(this, new GameProfileListener(logger));
         server.getEventManager().register(this, new PreLoginListener(logger, config));
-        logger.info("[✓] GameProfile 监听器已注册（皮肤/UUID 替换）");
+        server.getEventManager().register(this, new PostLoginListener(logger));
+        logger.info("[✓] 事件监听器已注册（GameProfile 替换 + detail 错误踢出）");
 
         logger.info("MultiLogin Service Compat 初始化完成！");
+    }
+
+    @Subscribe
+    public void onProxyShutdown(ProxyShutdownEvent event) {
+        if (localProxy != null) {
+            localProxy.stop();
+            logger.info("[MultiLogin] 本地认证代理已停止");
+        }
     }
 }
