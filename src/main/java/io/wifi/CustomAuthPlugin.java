@@ -1,0 +1,99 @@
+package io.wifi;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import org.slf4j.Logger;
+
+import com.google.gson.Gson;
+import com.google.inject.Inject;
+import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.plugin.Plugin;
+import com.velocitypowered.api.plugin.annotation.DataDirectory;
+import com.velocitypowered.api.proxy.ProxyServer;
+
+/**
+ * Velocity 自定义认证插件
+ *
+ * 遵循 authlib-injector 标准，将以下两类请求重定向到自定义服务器：
+ * 1. hasJoined 登录校验 → GET {base}/sessionserver/session/minecraft/hasJoined
+ * 2. 皮肤/Profile 获取 → GET {base}/sessionserver/session/minecraft/profile/{uuid}
+ *
+ * 自定义服务器地址：http://127.0.0.1:25600/login_train
+ */
+@Plugin(id = "multilogin-auth-compat", name = "MultiLogin Service Compat", version = "1.0.0", description = "将 Mojang 认证及皮肤接口重定向到自定义服务器 (authlib-injector 标准)", authors = {
+        "wifi-left" })
+public class CustomAuthPlugin {
+
+    /** 自定义认证服务器基础地址（不含末尾斜线） */
+    public static String AUTH_BASE_URL = "http://127.0.0.1:25600/login_train";
+    private final Path dataDirectory;
+    private static Gson GSON = new Gson();
+    private final ProxyServer server;
+    private final Logger logger;
+
+    @Inject
+    public CustomAuthPlugin(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
+        this.server = server;
+        this.logger = logger;
+        this.dataDirectory = dataDirectory;
+    }
+
+    private ModConfig loadOrCreateConfig(Path path) {
+        if (Files.exists(path)) {
+            try {
+                String json = Files.readString(path);
+                ModConfig loaded = GSON.fromJson(json, ModConfig.class);
+                if (loaded != null) {
+                    return loaded;
+                }
+            } catch (IOException e) {
+                logger.warn("[MultiLogin] Failed to read config, using defaults: {}", e.getMessage());
+            }
+        }
+
+        // Write a default (blank) config so the server operator can fill it in.
+        ModConfig defaults = new ModConfig();
+        try {
+            Files.createDirectories(path.getParent());
+            Files.writeString(path, GSON.toJson(defaults));
+            logger.info("[MultiLogin] Default config written to {}", path.toAbsolutePath());
+        } catch (IOException e) {
+            logger.warn("[MultiLogin] Could not write default config: {}", e.getMessage());
+        }
+        return defaults;
+    }
+
+    public static ModConfig config;
+
+    @Subscribe
+    public void onProxyInitialize(ProxyInitializeEvent event) {
+        Path configPath = dataDirectory.resolve("multilogin-compat-config.json");
+        config = loadOrCreateConfig(configPath);
+        AUTH_BASE_URL = config.getApiUrl();
+        logger.info("========================================");
+        logger.info("  Custom Auth Plugin 正在初始化...");
+        logger.info("  认证服务器: {}", AUTH_BASE_URL);
+        logger.info("========================================");
+        // Step 1: 尝试通过反射将 Velocity 内部的 hasJoined URL 替换
+        boolean urlOverridden = SessionServerUrlOverrider.tryOverride(AUTH_BASE_URL, logger);
+        if (urlOverridden) {
+            logger.info("[✓] hasJoined URL 劫持成功（反射方式）");
+        } else {
+            logger.warn("[!] hasJoined URL 反射劫持失败");
+            logger.warn("    请在启动 Velocity 时添加 JVM 参数（二选一）：");
+            logger.warn("    方式A: -Dvelocity.mojangSessionServerUrl={}/sessionserver/session/minecraft/hasJoined",
+                    AUTH_BASE_URL);
+            logger.warn(
+                    "    方式B: --add-opens=com.velocitypowered.proxy/com.velocitypowered.proxy.connection.client=ALL-UNNAMED");
+        }
+
+        // Step 2: 注册事件监听器，拦截皮肤/Profile 获取
+        server.getEventManager().register(this, new GameProfileListener(logger));
+        logger.info("[✓] GameProfile（皮肤）拦截器已注册");
+
+        logger.info("Custom Auth Plugin 初始化完成！");
+    }
+}
