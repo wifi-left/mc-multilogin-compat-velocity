@@ -91,6 +91,7 @@ public class CustomAuthPlugin {
 
         // Step 2: 注册事件监听器，确保玩家 GameProfile 来自 MC-MultiLogin-service
         server.getEventManager().register(this, new GameProfileListener(logger));
+        server.getEventManager().register(this, new PreLoginListener(logger, config));
         logger.info("[✓] GameProfile 监听器已注册（皮肤/UUID 替换）");
 
         logger.info("MultiLogin Service Compat 初始化完成！");
