@@ -9,19 +9,29 @@ import java.lang.reflect.Modifier;
 /**
  * 通过反射将 Velocity 内部硬编码的 Mojang sessionserver URL 替换为自定义地址。
  *
- * Velocity 的 hasJoined 校验地址存放在：
- * com.velocitypowered.proxy.connection.client.LoginSessionHandler
- * 的静态字符串字段中。
+ * Velocity 3.x 的 hasJoined 校验地址存放在：
+ *   com.velocitypowered.proxy.connection.client.InitialLoginSessionHandler
+ * 的静态字段 MOJANG_HASJOINED_URL 中，格式为：
+ *   "https://sessionserver.mojang.com/session/minecraft/hasJoined?username=%s&serverId=%s"
  *
- * 采用三级回退策略：
- * 1. JVM 系统属性 velocity.mojangSessionServerUrl（部分版本支持）
- * 2. 普通反射 setAccessible + 清除 FINAL 修饰符
- * 3. sun.misc.Unsafe 直接写入静态字段内存（兜底方案）
+ * Velocity 在构造请求时会调用 String.format(MOJANG_HASJOINED_URL, username, serverId)，
+ * 所以替换值也必须保留 %s 占位符。
+ *
+ * 也支持通过 JVM 启动参数设置（无需本插件运行）：
+ *   -Dmojang.sessionserver=http://your-service/path/sessionserver/session/minecraft/hasJoined
+ *
+ * 采用两级回退策略：
+ * 1. 普通反射 setAccessible（非 final 字段或 Java < 12 时有效）
+ * 2. sun.misc.Unsafe 直接写入静态字段内存（Java 9+ 兜底）
  */
 public final class SessionServerUrlOverrider {
 
-    /** Velocity 中可能存放 hasJoined URL 的候选类 */
+    /**
+     * Velocity 中可能存放 hasJoined URL 的候选类，按优先级排列。
+     * InitialLoginSessionHandler 是 Velocity 3.x 的实际位置。
+     */
     private static final String[] CANDIDATE_CLASSES = {
+            "com.velocitypowered.proxy.connection.client.InitialLoginSessionHandler",
             "com.velocitypowered.proxy.connection.client.LoginSessionHandler",
             "com.velocitypowered.proxy.util.VelocityAuthUtils",
             "com.velocitypowered.proxy.util.AuthUtils",
@@ -37,7 +47,7 @@ public final class SessionServerUrlOverrider {
             "MOJANG_HASJOIN_URL"
     };
 
-    /** Mojang 官方 hasJoined 地址，用于判断字段值是否为目标 */
+    /** Mojang 官方 hasJoined 地址关键字，用于判断字段值是否为目标 */
     private static final String MOJANG_SESSION_HOST = "sessionserver.mojang.com";
 
     private SessionServerUrlOverrider() {
@@ -46,24 +56,21 @@ public final class SessionServerUrlOverrider {
     /**
      * 尝试将 hasJoined URL 替换为自定义服务器。
      *
-     * @param authBaseUrl 自定义认证服务器基础 URL（不含末尾斜线）
+     * <p>替换值保留 Velocity 使用的 {@code ?username=%s&serverId=%s} 格式占位符，
+     * 因为 Velocity 会通过 {@code String.format(MOJANG_HASJOINED_URL, username, serverId)}
+     * 来构造最终 URL。
+     *
+     * @param authBaseUrl 自定义认证服务器基础 URL（不含末尾斜线），例如
+     *                    {@code http://127.0.0.1:25600/login_train}
      * @param logger      日志对象
      * @return 是否成功替换
      */
     public static boolean tryOverride(String authBaseUrl, Logger logger) {
-        String targetUrl = authBaseUrl + "/sessionserver/session/minecraft/hasJoined";
+        // 替换值必须保留 ?username=%s&serverId=%s，因为 Velocity 会用 String.format 填充它们
+        String targetUrl = authBaseUrl
+                + "/sessionserver/session/minecraft/hasJoined?username=%s&serverId=%s";
 
-        // ── 策略 1：JVM 系统属性（Velocity 部分版本支持）──────────────────
-        String sysProp = System.getProperty("velocity.mojangSessionServerUrl");
-        if (sysProp != null && sysProp.contains(MOJANG_SESSION_HOST)) {
-            System.setProperty("velocity.mojangSessionServerUrl", targetUrl);
-            logger.info("已通过 JVM 系统属性覆盖 hasJoined URL");
-            return true;
-        }
-        // 预防性地设置（如果 Velocity 稍后才读取该属性）
-        System.setProperty("velocity.mojangSessionServerUrl", targetUrl);
-
-        // ── 策略 2/3：扫描候选类字段，依次尝试反射/Unsafe 写入 ───────────
+        // ── 扫描候选类字段，依次尝试反射/Unsafe 写入 ─────────────────────
         for (String className : CANDIDATE_CLASSES) {
             Class<?> clazz;
             try {
@@ -108,7 +115,7 @@ public final class SessionServerUrlOverrider {
         return false;
     }
 
-    // ── 写入策略 2：标准反射（清除 final 修饰符）──────────────────────────
+    // ── 写入策略 1：标准反射（清除 final 修饰符，Java < 12 时有效）────────
     private static boolean writeViaReflection(Field field, String value) {
         try {
             Field modifiers = Field.class.getDeclaredField("modifiers");
@@ -121,7 +128,10 @@ public final class SessionServerUrlOverrider {
         }
     }
 
-    // ── 写入策略 3：sun.misc.Unsafe（Java 9+ 兜底）───────────────────────
+    // ── 写入策略 2：sun.misc.Unsafe（Java 9+ 兜底）───────────────────────
+    // Unsafe 是内部 API，在 Java 17+ 上 static final 字段无法通过普通反射修改，
+    // 因此必须借助 Unsafe.putObject 直接写入内存。
+    // 若未来 Unsafe 被移除，需改为 Java Agent / ASM 字节码注入方式。
     @SuppressWarnings("removal")
     private static boolean writeViaUnsafe(Field field, String value, Logger logger) {
         try {
@@ -140,7 +150,7 @@ public final class SessionServerUrlOverrider {
     }
 
     private static boolean writeField(Field field, String value, Logger logger) {
-        // 先尝试普通反射
+        // 先尝试普通反射（对非 final 字段或低版本 JVM 有效）
         if (!Modifier.isFinal(field.getModifiers())) {
             try {
                 field.set(null, value);
@@ -150,7 +160,7 @@ public final class SessionServerUrlOverrider {
         }
         if (writeViaReflection(field, value))
             return true;
-        // 兜底使用 Unsafe
+        // 兜底使用 Unsafe（在 Java 17 上通常可行）
         return writeViaUnsafe(field, value, logger);
     }
 }

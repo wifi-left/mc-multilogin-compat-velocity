@@ -23,11 +23,11 @@ import com.velocitypowered.api.proxy.ProxyServer;
  *
  * 自定义服务器地址：http://127.0.0.1:25600/login_train
  */
-@Plugin(id = "multilogin-auth-compat", name = "MultiLogin Service Compat", version = "1.0.0", description = "将 Mojang 认证及皮肤接口重定向到自定义服务器 (authlib-injector 标准)", authors = {
+@Plugin(id = "multilogin-auth-compat", name = "MultiLogin Service Compat", version = "1.0.0", description = "将 Mojang 认证及皮肤接口重定向到 MC-MultiLogin-service (authlib-injector 标准)", authors = {
         "wifi-left" })
 public class CustomAuthPlugin {
 
-    /** 自定义认证服务器基础地址（不含末尾斜线） */
+    /** 自定义认证服务器基础地址（不含末尾斜线），从配置加载后覆盖此值 */
     public static String AUTH_BASE_URL = "http://127.0.0.1:25600/login_train";
     private final Path dataDirectory;
     private static Gson GSON = new Gson();
@@ -74,26 +74,25 @@ public class CustomAuthPlugin {
         config = loadOrCreateConfig(configPath);
         AUTH_BASE_URL = config.getApiUrl();
         logger.info("========================================");
-        logger.info("  Custom Auth Plugin 正在初始化...");
-        logger.info("  认证服务器: {}", AUTH_BASE_URL);
+        logger.info("  MultiLogin Service Compat 正在初始化...");
+        logger.info("  MC-MultiLogin-service 地址: {}", AUTH_BASE_URL);
         logger.info("========================================");
         // Step 1: 尝试通过反射将 Velocity 内部的 hasJoined URL 替换
         boolean urlOverridden = SessionServerUrlOverrider.tryOverride(AUTH_BASE_URL, logger);
         if (urlOverridden) {
             logger.info("[✓] hasJoined URL 劫持成功（反射方式）");
         } else {
-            logger.warn("[!] hasJoined URL 反射劫持失败");
-            logger.warn("    请在启动 Velocity 时添加 JVM 参数（二选一）：");
-            logger.warn("    方式A: -Dvelocity.mojangSessionServerUrl={}/sessionserver/session/minecraft/hasJoined",
+            logger.warn("[!] hasJoined URL 反射劫持失败，外置登录玩家将无法进入服务器！");
+            logger.warn("    解决方案：在启动 Velocity 时添加以下 JVM 参数：");
+            logger.warn("    -Dmojang.sessionserver={}/sessionserver/session/minecraft/hasJoined",
                     AUTH_BASE_URL);
-            logger.warn(
-                    "    方式B: --add-opens=com.velocitypowered.proxy/com.velocitypowered.proxy.connection.client=ALL-UNNAMED");
+            logger.warn("    此参数在 Velocity 读取 InitialLoginSessionHandler 之前生效。");
         }
 
-        // Step 2: 注册事件监听器，拦截皮肤/Profile 获取
+        // Step 2: 注册事件监听器，确保玩家 GameProfile 来自 MC-MultiLogin-service
         server.getEventManager().register(this, new GameProfileListener(logger));
-        logger.info("[✓] GameProfile（皮肤）拦截器已注册");
+        logger.info("[✓] GameProfile 监听器已注册（皮肤/UUID 替换）");
 
-        logger.info("Custom Auth Plugin 初始化完成！");
+        logger.info("MultiLogin Service Compat 初始化完成！");
     }
 }
