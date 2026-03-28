@@ -105,7 +105,6 @@ public class CustomAuthPlugin {
 
         // Step 3: 注册事件监听器
         server.getEventManager().register(this, new GameProfileListener(logger));
-        server.getEventManager().register(this, new PreLoginListener(logger, config));
         server.getEventManager().register(this, new PostLoginListener(logger));
         logger.info("[✓] 事件监听器已注册（GameProfile 替换 + detail 错误踢出）");
 

@@ -1,7 +1,8 @@
 package io.wifi;
 
 import com.velocitypowered.api.event.Subscribe;
-import com.velocitypowered.api.event.player.PostLoginEvent;
+import com.velocitypowered.api.event.connection.PostLoginEvent;
+
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
 
