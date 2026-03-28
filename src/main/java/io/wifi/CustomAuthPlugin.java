@@ -77,21 +77,11 @@ public class CustomAuthPlugin {
         logger.info("  Custom Auth Plugin 正在初始化...");
         logger.info("  认证服务器: {}", AUTH_BASE_URL);
         logger.info("========================================");
-        // Step 1: 尝试通过反射将 Velocity 内部的 hasJoined URL 替换
-        boolean urlOverridden = SessionServerUrlOverrider.tryOverride(AUTH_BASE_URL, logger);
-        if (urlOverridden) {
-            logger.info("[✓] hasJoined URL 劫持成功（反射方式）");
-        } else {
-            logger.warn("[!] hasJoined URL 反射劫持失败");
-            logger.warn("    请在启动 Velocity 时添加 JVM 参数（二选一）：");
-            logger.warn("    方式A: -Dvelocity.mojangSessionServerUrl={}/sessionserver/session/minecraft/hasJoined",
-                    AUTH_BASE_URL);
-            logger.warn(
-                    "    方式B: --add-opens=com.velocitypowered.proxy/com.velocitypowered.proxy.connection.client=ALL-UNNAMED");
-        }
 
         // Step 2: 注册事件监听器，拦截皮肤/Profile 获取
         server.getEventManager().register(this, new GameProfileListener(logger));
+        server.getEventManager().register(this, new PreLoginListener(logger, config));
+        // /sessionserver/session/minecraft/hasJoined
         logger.info("[✓] GameProfile（皮肤）拦截器已注册");
 
         logger.info("Custom Auth Plugin 初始化完成！");
