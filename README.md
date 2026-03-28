@@ -1,0 +1,1 @@
+本项目用于对接 [MC-MultiLogin-service](https://github.com/wifi-left/MC-MultiLogin-service) 提供的API，实现多源登录功能。
