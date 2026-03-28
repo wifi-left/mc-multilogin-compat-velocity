@@ -1,9 +1,20 @@
 package io.wifi;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.player.GameProfileRequestEvent;
+import com.velocitypowered.api.util.GameProfile;
 import org.slf4j.Logger;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -32,6 +43,9 @@ public class GameProfileListener {
 
     public GameProfileListener(Logger logger) {
         this.logger = logger;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(HTTP_TIMEOUT_SEC))
+                .build();
     }
 
     @Subscribe
@@ -47,6 +61,13 @@ public class GameProfileListener {
         // 若 hasJoined 重定向已成功，profile 里应当已有 textures property
         if (hasTextures(existing)) {
             logger.debug("[MultiLogin] 玩家 {} 的 Profile 已含 textures，直接使用（来自 hasJoined）", playerName);
+            return;
+        }
+
+        // 若 profile 含有错误标记属性，说明是 LocalAuthProxy 注入的假 Profile；
+        // 跳过远程 Profile 获取——PostLoginListener 会负责踢出玩家并展示错误信息。
+        if (hasErrorMarker(existing)) {
+            logger.debug("[MultiLogin] 玩家 {} 的 Profile 含错误标记，跳过 Profile 获取", playerName);
             return;
         }
 
@@ -100,6 +121,16 @@ public class GameProfileListener {
         for (GameProfile.Property prop : profile.getProperties()) {
             if ("textures".equals(prop.getName())
                     && prop.getValue() != null && !prop.getValue().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 检查 GameProfile 是否包含由 {@link LocalAuthProxy} 注入的错误标记属性。 */
+    private boolean hasErrorMarker(GameProfile profile) {
+        for (GameProfile.Property prop : profile.getProperties()) {
+            if (LocalAuthProxy.ERROR_PROPERTY_NAME.equals(prop.getName())) {
                 return true;
             }
         }
